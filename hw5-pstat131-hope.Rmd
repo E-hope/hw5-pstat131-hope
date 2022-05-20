@@ -1,0 +1,235 @@
+---
+title: "hw5-pstat131"
+author: "Evan Hope"
+date: "5/15/2022"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+Before I begin, I will import some packages.
+
+```{r}
+library(plyr)
+```
+
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+```
+
+
+
+```{r}
+library(tidymodels)
+```
+
+```{r}
+library(corrplot)
+```
+```{r}
+library(ggthemes)
+library(ISLR2) 
+library(discrim)
+```
+
+```{r}
+library(poissonreg)
+library(corrr)
+library(klaR)
+```
+
+
+
+
+```{r}
+tidymodels_prefer()
+
+```
+
+
+...and setting the seed
+```{r}
+set.seed(5152022)
+```
+
+Question 1.) Download package and use clean_names()
+
+```{r}
+library(janitor)
+```
+
+Janitor package installed and uploaded! Now to read in our data and to perform some data cleaning using clean_names().
+
+```{r}
+pokemon_data <- read.csv("C:/Users/Ordai/OneDrive/Desktop/School/Stats/PSTAT 131/Pokemon.csv")
+```
+
+Cleaning the data now.
+```{r}
+pokemon_data <- pokemon_data %>% 
+  clean_names()
+```
+
+The reason cleaning the variable names may be useful is for when we want to refer to them in code later on and some variable names have awkward capitalizations or syntax. Cleaning the names will allow for a more efficient and consistent way of accessing the variable names.
+
+
+
+Question 2.) bar chart
+```{r}
+ggplot(pokemon_data, aes(type_1)) +
+  geom_bar() +
+  labs(
+    title = "Count of Pokemon Types",
+    x = "Pokemon Type",
+    y = "Count"
+  ) +
+  coord_flip()
+```
+
+As we can see there are 18 classes of the type 1 outcome. Furthermore, it appears that flying type pokemon have the least amount of pokemon by noticeable margin. After that, there are low counts of pokemon for the ice, fairy, steel, and poison types compared to the remaining unmentioned types thus far.
+
+
+Filtering the data:
+```{r}
+pokemon_data_filtered <- pokemon_data %>%
+  filter(type_1 == "Bug" | type_1 == "Fire" | type_1 == "Grass" | type_1 == "Normal" | type_1 == "Water" | type_1 == "Physic")
+```
+
+And now changing variables into factors...
+```{r}
+pokemon_data_filtered$type_1 <- factor(pokemon_data_filtered$type_1)
+
+pokemon_data_filtered$legendary <- factor(pokemon_data_filtered$legendary)
+
+pokemon_data_filtered$generation <- factor(pokemon_data_filtered$generation)
+```
+
+Question 3.) Splitting and stratifying
+
+Here is the initial split of the data.
+```{r}
+pokemon_data_filt_split <- initial_split(pokemon_data_filtered, prop = .70, strata = type_1)
+
+pokemon_train <- training(pokemon_data_filt_split)
+pokemon_test <- testing(pokemon_data_filt_split)
+```
+
+Performing 5 fold cross validation...
+```{r}
+pokemon_train_5fold <- vfold_cv(pokemon_train, v = 5, strata = type_1)
+```
+
+Stratified sampling is helpful here since we are dealing with qualitative data. Stratifying the folds allows for more consistent results among each fold in our training set.
+
+
+Question 4.) Recipe
+
+```{r}
+pokemon_recipe <- recipe(type_1 ~ legendary + generation + sp_atk + attack + speed + defense + hp + sp_def, data = pokemon_train) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_predictors())
+```
+
+
+Question 5.)
+
+Setting up the engine and wkflow...
+```{r}
+multi_reg_pokemon <- multinom_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+
+multi_wkflow <- workflow() %>%
+  add_model(multi_reg_pokemon) %>%
+  add_recipe(pokemon_recipe)
+```
+
+Now setting up the grid:
+```{r}
+pokemon_reg_grid <- grid_regular(penalty(range = c(-5,5)), mixture(range = c(0,1)), levels = 10)
+```
+With levels = 10, we will be fitting 500 total models.
+
+
+Question 6.)
+
+Forgot to download necessary packages...
+
+```{r}
+library(glmnet)
+```
+
+Fitting our models now...
+```{r}
+tune_pokemon_res <- tune_grid(multi_wkflow, resamples = pokemon_train_5fold, grid = pokemon_reg_grid)
+```
+```{r}
+autoplot(tune_pokemon_res)
+```
+Here we can clearly see that the amount of regularization influences the accuracy and performance metrics. As the amount of regularization increases and reaches a certain range, it no longer as any meaningful impact.
+
+Similarly, different values of the penalty and mixture influences the accuracy.
+
+
+Question 7.)
+First, lets collect some metrics.
+```{r}
+collect_metrics(tune_pokemon_res)
+```
+Selecting the best model based on roc_auc
+
+```{r}
+best_pokemon_model <- select_best(tune_pokemon_res, metric = "roc_auc")
+best_pokemon_model
+```
+Here we can see the optimal penalty and mixture values that gives us the best roc_auc value are:
+
+penalty: 0.02154435
+mixture: 0.5555556
+
+Now lets apply this information to our new model and evaluate its performance via the training and test set.
+
+```{r}
+pokemon_final <- finalize_workflow(multi_wkflow, best_pokemon_model)
+
+pokemon_final_fit <- fit(pokemon_final, data = pokemon_train)
+```
+
+End of Q7 -> Question 8.) 
+Fitting and predicting on the test set with our selected model...
+```{r}
+aug_fit <- augment(pokemon_final_fit, new_data = pokemon_test)%>%
+  roc_auc(truth = type_1, .pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water)
+
+aug_fit
+  
+```
+The ROC_AUC of the test set is 0.7126283 !
+
+Its important to note that in my test set, there were no physic type 1 pokemon since they were all used for the training set. R couldnt find a column in the test set when I used ".pred_Physic" since there werent any physic left.
+
+Plotting the different ROC curve for each outcome...
+```{r}
+last_pokemon_fit <- augment(pokemon_final_fit, new_data = pokemon_test)%>%
+  roc_curve(truth = type_1, .pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water)
+
+autoplot(last_pokemon_fit, type = 'heatmap')
+```
+
+Lastly, I will make a heat map of the confusion matrix.
+
+
+
+augment(pokemon_final_fit, new_data = pokemon_test)%>%
+  conf_mat(truth = type_1, .pred_Bug, .pred_Fire, .pred_Grass, .pred_Normal, .pred_Water) %>%
+  autoplot(type = "heatmap")
+
+
+
+
+I cant seem to correct this error. Error states that the "truth" and "estimate" have multiple possible values and will not run. Specifically when making the confusion matrix.
+
+However from the ROC curves we notice that our model has a hard time with water type pokemon as well as grass. It appears to deal with normal type pokemon quite well though.
